@@ -1,7 +1,9 @@
-streamlit==1.32.2
-pandas==2.1.4
-plotly==5.18.0
-numpy==1.26.2
-fpdf2==2.7.7
-python-dateutil==2.8.2
-requests==2.31.0
+streamlit
+pandas
+plotly
+numpy
+fpdf2
+python-dateutil
+requests
+openpyxl
+xlsxwriter
