@@ -23,9 +23,19 @@ st.set_page_config(
 @st.cache_data
 def cargar_datos():
     try:
-        ruta = Path(r"D:\Desktop2\TRABAJO BD\PROYECTOS_DB\ORLANDO\DASHBOARD\data2.xlsx")
+        # ID del archivo (extraído de la URL)
+        file_id = "1Rg8wMJPbQAo7g3Pp6_NyIbVsE27sYESB"
+        
+        # Descargar como Excel
+        url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
+        response = requests.get(url)
+        
+        # Leer el archivo en memoria
+        excel_data = BytesIO(response.content)
+        
+        # Hoja principal
         df = pd.read_excel(
-            ruta,
+            excel_data,
             sheet_name=0,
             parse_dates=['Fecha'],
             thousands=',',
@@ -33,19 +43,15 @@ def cargar_datos():
                        if isinstance(x, str) else x}
         )
         
-        cols_requeridas = {'Fecha', 'Mes', 'Year', 'Tipo', 'Monto'}
-        if not cols_requeridas.issubset(df.columns):
-            faltantes = cols_requeridas - set(df.columns)
-            st.error(f"Columnas faltantes: {faltantes}")
-            return pd.DataFrame(), None
-        
-        df['Año'] = df['Year']
+        # Procesamiento de columnas (igual que antes)
+        df['Año'] = df['Year'] if 'Year' in df.columns else df['Fecha'].dt.year
         df['Mes_num'] = df['Fecha'].dt.month
-        df['Mes_nombre'] = df['Mes']
+        df['Mes_nombre'] = df['Mes'] if 'Mes' in df.columns else df['Fecha'].dt.strftime('%B')
         df['Monto'] = pd.to_numeric(df['Monto'])
         
+        # Hoja de presupuesto (si existe)
         try:
-            presupuesto = pd.read_excel(ruta, sheet_name="Presupuesto")
+            presupuesto = pd.read_excel(excel_data, sheet_name="Presupuesto")
             presupuesto['Mes'] = pd.to_datetime(presupuesto['Mes'])
             presupuesto['Año'] = presupuesto['Mes'].dt.year
             presupuesto['Mes_num'] = presupuesto['Mes'].dt.month
