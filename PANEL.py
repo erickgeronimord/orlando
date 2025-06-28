@@ -9,7 +9,7 @@ from io import BytesIO
 from pathlib import Path
 import warnings
 import plotly.graph_objects as go
-warnings.filterwarnings('ignore')
+import requests
 
 # Configuración inicial
 st.set_page_config(
