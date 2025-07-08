@@ -9,7 +9,7 @@ from io import BytesIO
 from pathlib import Path
 import warnings
 import plotly.graph_objects as go
-import requests
+warnings.filterwarnings('ignore')
 
 # Configuración inicial
 st.set_page_config(
@@ -19,23 +19,23 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Paleta de colores constante
+COLORES = {
+    'ingresos': '#4CAF50',  # Verde
+    'gastos': '#F44336',    # Rojo
+    'beneficio': '#2196F3', # Azul
+    'margen': '#9C27B0',    # Morado
+    'destacado': '#FFC107', # Amarillo
+    'linea': '#607D8B'      # Gris azulado
+}
+
 # Funciones auxiliares
 @st.cache_data
 def cargar_datos():
     try:
-        # ID del archivo (extraído de la URL)
-        file_id = "1Rg8wMJPbQAo7g3Pp6_NyIbVsE27sYESB"
-        
-        # Descargar como Excel
-        url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
-        response = requests.get(url)
-        
-        # Leer el archivo en memoria
-        excel_data = BytesIO(response.content)
-        
-        # Hoja principal
+        ruta = Path(r"D:\Desktop2\TRABAJO BD\PROYECTOS_DB\ORLANDO\DASHBOARD\data2.xlsx")
         df = pd.read_excel(
-            excel_data,
+            ruta,
             sheet_name=0,
             parse_dates=['Fecha'],
             thousands=',',
@@ -43,18 +43,38 @@ def cargar_datos():
                        if isinstance(x, str) else x}
         )
         
-        # Procesamiento de columnas (igual que antes)
-        df['Año'] = df['Year'] if 'Year' in df.columns else df['Fecha'].dt.year
+        cols_requeridas = {'Fecha', 'Mes', 'Year', 'Tipo', 'Monto'}
+        if not cols_requeridas.issubset(df.columns):
+            faltantes = cols_requeridas - set(df.columns)
+            st.error(f"Columnas faltantes: {faltantes}")
+            return pd.DataFrame(), None
+        
+        # Año fiscal (para agrupamiento)
+        df['Año_Fiscal'] = df['Fecha'].apply(lambda x: x.year + 1 if x.month >= 10 else x.year)
+        # Año real (para visualización)
+        df['Año_Real'] = df['Fecha'].dt.year
         df['Mes_num'] = df['Fecha'].dt.month
-        df['Mes_nombre'] = df['Mes'] if 'Mes' in df.columns else df['Fecha'].dt.strftime('%B')
+        df['Mes_nombre'] = df['Fecha'].dt.strftime('%B')
+        
+        # Calcular año fiscal (octubre a septiembre)
+        df['Año_Fiscal'] = df['Fecha'].apply(
+            lambda x: x.year + 1 if x.month >= 10 else x.year
+        )
+        
+        df['Año'] = df['Year']
+        df['Mes_num'] = df['Fecha'].dt.month
+        df['Mes_nombre'] = df['Mes']
         df['Monto'] = pd.to_numeric(df['Monto'])
         
-        # Hoja de presupuesto (si existe)
         try:
-            presupuesto = pd.read_excel(excel_data, sheet_name="Presupuesto")
+            presupuesto = pd.read_excel(ruta, sheet_name="Presupuesto")
             presupuesto['Mes'] = pd.to_datetime(presupuesto['Mes'])
             presupuesto['Año'] = presupuesto['Mes'].dt.year
             presupuesto['Mes_num'] = presupuesto['Mes'].dt.month
+            # Año fiscal para presupuesto
+            presupuesto['Año_Fiscal'] = presupuesto['Mes'].apply(
+                lambda x: x.year + 1 if x.month >= 10 else x.year
+            )
             return df, presupuesto
         except:
             return df, None
@@ -73,72 +93,165 @@ def format_number(x, is_currency=True):
         return "{:,.2f}".format(num).replace(",", "X").replace(".", ",").replace("X", ".")
     except:
         return str(x)
-
+    
 @st.cache_data
-def calcular_resumen(_df, año=None):
+def cargar_datos():
+    try:
+        ruta = Path(r"D:\Desktop2\TRABAJO BD\PROYECTOS_DB\ORLANDO\DASHBOARD\data2.xlsx")
+        df = pd.read_excel(
+            ruta,
+            sheet_name=0,
+            parse_dates=['Fecha'],
+            thousands=',',
+            converters={'Monto': lambda x: float(x.replace('$','').replace(',','')) 
+                       if isinstance(x, str) else x}
+        )
+        
+        # Verificar columnas requeridas
+        cols_requeridas = {'Fecha', 'Tipo', 'Monto'}
+        if not cols_requeridas.issubset(df.columns):
+            faltantes = cols_requeridas - set(df.columns)
+            st.error(f"Columnas faltantes: {faltantes}")
+            return pd.DataFrame()
+        
+        # Procesamiento de fechas y años
+        df['Año_Fiscal'] = df['Fecha'].apply(lambda x: x.year + 1 if x.month >= 10 else x.year)
+        df['Año_Real'] = df['Fecha'].dt.year
+        df['Mes_num'] = df['Fecha'].dt.month
+        df['Mes_nombre'] = df['Fecha'].dt.strftime('%B')
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"Error al cargar datos: {str(e)}")
+        return pd.DataFrame()
+
+# Modificamos la función calcular_resumen para incluir Año_Real
+@st.cache_data
+def calcular_resumen(_df, año_fiscal=None):
     if _df.empty:
         return pd.DataFrame()
     
     try:
-        # Filtrar por año si se especifica
-        if año is not None:
-            _df = _df[_df['Año'] == año]
+        # Verificar columnas requeridas
+        required_cols = ['Fecha', 'Tipo', 'Monto']
+        if not all(col in _df.columns for col in required_cols):
+            missing = [col for col in required_cols if col not in _df.columns]
+            st.error(f"Columnas faltantes: {missing}")
+            return pd.DataFrame()
         
-        resumen = _df.groupby(['Año', 'Mes_num', 'Mes_nombre']).apply(
+        # Crear columnas necesarias si no existen
+        if 'Año_Fiscal' not in _df.columns:
+            _df['Año_Fiscal'] = _df['Fecha'].apply(lambda x: x.year + 1 if x.month >= 10 else x.year)
+        if 'Año_Real' not in _df.columns:
+            _df['Año_Real'] = _df['Fecha'].dt.year
+        if 'Mes_num' not in _df.columns:
+            _df['Mes_num'] = _df['Fecha'].dt.month
+        if 'Mes_nombre' not in _df.columns:
+            _df['Mes_nombre'] = _df['Fecha'].dt.strftime('%B')
+        
+        # Filtrar por año fiscal
+        if año_fiscal is not None:
+            _df = _df[_df['Año_Fiscal'] == año_fiscal].copy()
+        
+        # Calcular métricas
+        resumen = _df.groupby(['Año_Fiscal', 'Año_Real', 'Mes_num', 'Mes_nombre']).apply(
             lambda x: pd.Series({
                 'Ingreso': x[x['Tipo'].str.contains('ingreso', case=False, na=False)]['Monto'].sum(),
                 'Gasto': x[x['Tipo'].str.contains('gasto|costo', case=False, na=False, regex=True)]['Monto'].sum(),
-                'Beneficio': x[x['Tipo'].str.contains('ingreso', case=False, na=False)]['Monto'].sum() - 
-                            x[x['Tipo'].str.contains('gasto|costo', case=False, na=False, regex=True)]['Monto'].sum()
+                'Beneficio': (x[x['Tipo'].str.contains('ingreso', case=False, na=False)]['Monto'].sum() - 
+                             x[x['Tipo'].str.contains('gasto|costo', case=False, na=False, regex=True)]['Monto'].sum())
             })
         ).reset_index()
         
-        resumen['Margen'] = (resumen['Beneficio'] / resumen['Ingreso'].replace(0, np.nan)) * 100
+        # Calcular margen (evitando división por cero)
+        resumen['Margen'] = resumen.apply(
+            lambda x: (x['Beneficio'] / x['Ingreso'] * 100) if x['Ingreso'] != 0 else 0,
+            axis=1
+        )
         
-        # Solo agregar total si hay datos
+        # Agregar fila de totales
         if not resumen.empty:
-            totales = pd.DataFrame({
+            total_row = pd.DataFrame({
                 'Mes_nombre': ['Total'],
                 'Ingreso': [resumen['Ingreso'].sum()],
                 'Gasto': [resumen['Gasto'].sum()],
                 'Beneficio': [resumen['Beneficio'].sum()],
-                'Margen': [(resumen['Beneficio'].sum() / resumen['Ingreso'].sum() * 100) 
-                          if resumen['Ingreso'].sum() > 0 else 0]
+                'Margen': [
+                    (resumen['Beneficio'].sum() / resumen['Ingreso'].sum() * 100) 
+                    if resumen['Ingreso'].sum() > 0 else 0
+                ]
             })
-            resumen = pd.concat([resumen, totales], ignore_index=True)
+            
+            # Mantener todas las columnas
+            for col in resumen.columns:
+                if col not in total_row:
+                    total_row[col] = None
+            
+            resumen = pd.concat([resumen, total_row], ignore_index=True)
         
         return resumen.sort_values('Mes_num')
     
     except Exception as e:
-        st.error(f"Error al calcular resumen: {str(e)}")
+        st.error(f"Error en calcular_resumen(): {str(e)}")
         return pd.DataFrame()
 
 def crear_pdf(data, titulo):
     try:
+        if data.empty:
+            st.warning("No hay datos para generar el PDF")
+            return None
+            
+        # Verificar nombres alternativos de columnas
+        mes_col = 'Mes_nombre' if 'Mes_nombre' in data.columns else \
+                 'Mes' if 'Mes' in data.columns else \
+                 'Fecha' if 'Fecha' in data.columns else None
+                 
+        if mes_col is None:
+            st.error("No se encontró columna de mes en los datos")
+            return None
+
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", size=12)
         pdf.cell(200, 10, txt=titulo, ln=1, align='C')
         
-        pdf.set_font("Arial", size=10, style='B')
-        col_width = pdf.w / 4.5
+        # Configurar anchos de columnas
+        col_widths = [40, 30, 30, 30, 30]  # Ajustar según necesidad
         row_height = pdf.font_size * 1.5
-        headers = ["Mes", "Ingreso", "Gasto", "Beneficio", "Margen (%)"]
         
-        for header in headers:
-            pdf.cell(col_width, row_height, txt=header, border=1)
+        # Encabezados
+        headers = ["Mes", "Ingreso", "Gasto", "Beneficio", "Margen (%)"]
+        pdf.set_font("Arial", size=10, style='B')
+        
+        for i, header in enumerate(headers):
+            pdf.cell(col_widths[i], row_height, txt=header, border=1)
         pdf.ln(row_height)
         
+        # Datos
         pdf.set_font("Arial", size=10)
         for _, row in data.iterrows():
-            pdf.cell(col_width, row_height, txt=str(row['Mes_nombre']), border=1)
-            pdf.cell(col_width, row_height, txt=format_number(row['Ingreso']), border=1)
-            pdf.cell(col_width, row_height, txt=format_number(row['Gasto']), border=1)
-            pdf.cell(col_width, row_height, txt=format_number(row['Beneficio']), border=1)
-            pdf.cell(col_width, row_height, txt=f"{row['Margen']:.2f}%", border=1)
+            # Determinar texto para la columna de mes
+            if mes_col == 'Fecha':
+                mes_text = row['Fecha'].strftime('%B %Y')  # Formato "Mes Año"
+            else:
+                mes_text = str(row[mes_col])
+            
+            # Formatear números
+            ingreso = format_number(row['Ingreso']) if 'Ingreso' in row else "N/A"
+            gasto = format_number(row['Gasto']) if 'Gasto' in row else "N/A"
+            beneficio = format_number(row['Beneficio']) if 'Beneficio' in row else "N/A"
+            margen = f"{row['Margen']:.2f}%" if 'Margen' in row else "N/A"
+            
+            pdf.cell(col_widths[0], row_height, txt=mes_text, border=1)
+            pdf.cell(col_widths[1], row_height, txt=ingreso, border=1)
+            pdf.cell(col_widths[2], row_height, txt=gasto, border=1)
+            pdf.cell(col_widths[3], row_height, txt=beneficio, border=1)
+            pdf.cell(col_widths[4], row_height, txt=margen, border=1)
             pdf.ln(row_height)
         
         return pdf
+        
     except Exception as e:
         st.error(f"Error al crear PDF: {str(e)}")
         return None
@@ -154,10 +267,10 @@ def download_pdf(pdf, filename):
         )
 
 # Funciones de visualización
-def mostrar_resumen_general(df, año, resumen_ly=None):
-    st.title(f"📊 Resumen General {año}")
+def mostrar_resumen_general(df, año_fiscal, resumen_ly=None):
+    st.title(f"📊 Resumen General Año Fiscal {año_fiscal} (Oct {año_fiscal-1} - Sep {año_fiscal})")
     
-    resumen = calcular_resumen(df, año)
+    resumen = calcular_resumen(df, año_fiscal)
     if resumen.empty:
         st.warning("No hay datos para mostrar")
         return
@@ -166,30 +279,30 @@ def mostrar_resumen_general(df, año, resumen_ly=None):
     cols = st.columns(4)
     
     if resumen_ly is not None and not resumen_ly.empty:
-        año_anterior = año - 1
+        año_fiscal_anterior = año_fiscal - 1
         with cols[0]:
             ingreso_ly = resumen_ly['Ingreso'].sum()
             delta_ing = ((resumen['Ingreso'].sum() - ingreso_ly) / ingreso_ly * 100) if ingreso_ly != 0 else 0
             st.metric("💰 Ingresos Totales", 
                      format_number(resumen['Ingreso'].sum()), 
-                     delta=f"{delta_ing:.1f}% vs {año_anterior}",
-                     help=f"Comparación con {año_anterior}")
+                     delta=f"{delta_ing:.1f}% vs {año_fiscal_anterior}",
+                     help=f"Comparación con Año Fiscal {año_fiscal_anterior}")
         
         with cols[1]:
             gasto_ly = resumen_ly['Gasto'].sum()
             delta_gas = ((resumen['Gasto'].sum() - gasto_ly) / gasto_ly * 100) if gasto_ly != 0 else 0
             st.metric("🏷️ Gastos Totales", 
                      format_number(resumen['Gasto'].sum()), 
-                     delta=f"{delta_gas:.1f}% vs {año_anterior}",
-                     help=f"Comparación con {año_anterior}")
+                     delta=f"{delta_gas:.1f}% vs {año_fiscal_anterior}",
+                     help=f"Comparación con Año Fiscal {año_fiscal_anterior}")
         
         with cols[2]:
             beneficio_ly = resumen_ly['Beneficio'].sum()
             delta_ben = ((resumen['Beneficio'].sum() - beneficio_ly)) / abs(beneficio_ly) * 100 if beneficio_ly != 0 else 0
             st.metric("📈 Beneficio Total", 
                      format_number(resumen['Beneficio'].sum()), 
-                     delta=f"{delta_ben:.1f}% vs {año_anterior}",
-                     help=f"Comparación con {año_anterior}")
+                     delta=f"{delta_ben:.1f}% vs {año_fiscal_anterior}",
+                     help=f"Comparación con Año Fiscal {año_fiscal_anterior}")
         
         with cols[3]:
             margen = (resumen['Beneficio'].sum() / resumen['Ingreso'].sum() * 100) if resumen['Ingreso'].sum() != 0 else 0
@@ -197,8 +310,8 @@ def mostrar_resumen_general(df, año, resumen_ly=None):
             delta_mar = margen - margen_ly
             st.metric("📊 Margen Total", 
                      f"{margen:.2f}%", 
-                     delta=f"{delta_mar:.1f}pp vs {año_anterior}",
-                     help=f"Puntos porcentuales vs {año_anterior}")
+                     delta=f"{delta_mar:.1f}pp vs {año_fiscal_anterior}",
+                     help=f"Puntos porcentuales vs Año Fiscal {año_fiscal_anterior}")
     else:
         with cols[0]:
             st.metric("💰 Ingresos Totales", format_number(resumen['Ingreso'].sum()))
@@ -215,44 +328,45 @@ def mostrar_resumen_general(df, año, resumen_ly=None):
     # Gráficos de resumen (excluyendo el total)
     resumen_meses = resumen[resumen['Mes_nombre'] != 'Total']
     
-    st.subheader(f"📈 Tendencias Mensuales {año}")
+    # Agregar año al nombre del mes
+    resumen_meses['Mes_Año'] = resumen_meses.apply(
+        lambda x: f"{x['Mes_nombre']} {int(x['Año_Real'])}", 
+        axis=1
+    )
+    
+    st.subheader(f"📈 Tendencias Mensuales Año Fiscal {año_fiscal}")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        fig_ingresos = px.bar(resumen_meses, x='Mes_nombre', y='Ingreso',
-                             title=f'Ingresos por Mes {año}',
-                             color='Ingreso',
-                             color_continuous_scale='Blues')
+        fig_ingresos = px.bar(resumen_meses, x='Mes_Año', y='Ingreso',
+                             title=f'Ingresos por Mes {año_fiscal}',
+                             color_discrete_sequence=[COLORES['ingresos']])
         st.plotly_chart(fig_ingresos, use_container_width=True)
 
     with col2:
-        fig_gastos = px.bar(resumen_meses, x='Mes_nombre', y='Gasto',
-                           title=f'Gastos por Mes {año}',
-                           color='Gasto',
-                           color_continuous_scale='Reds')
+        fig_gastos = px.bar(resumen_meses, x='Mes_Año', y='Gasto',
+                           title=f'Gastos por Mes {año_fiscal}',
+                           color_discrete_sequence=[COLORES['gastos']])
         st.plotly_chart(fig_gastos, use_container_width=True)
     
-    col1, col2 = st.columns(2)
-    
     with col1:
-        fig_beneficios = px.bar(resumen_meses, x='Mes_nombre', y='Beneficio',
-                               title=f'Beneficios por Mes {año}',
-                               color='Beneficio',
-                               color_continuous_scale=px.colors.diverging.Tealrose)
+        fig_beneficios = px.bar(resumen_meses, x='Mes_Año', y='Beneficio',
+                               title=f'Beneficios por Mes {año_fiscal}',
+                               color_discrete_sequence=[COLORES['beneficio']])
         st.plotly_chart(fig_beneficios, use_container_width=True)
     
     with col2:
-        fig_margen = px.line(resumen_meses, x='Mes_nombre', y='Margen',
-                            title=f'Evolución del Margen (%) {año}',
+        fig_margen = px.line(resumen_meses, x='Mes_Año', y='Margen',
+                            title=f'Evolución del Margen (%) {año_fiscal}',
                             markers=True,
-                            color_discrete_sequence=['#3498db'])
+                            color_discrete_sequence=[COLORES['margen']])
         st.plotly_chart(fig_margen, use_container_width=True)
     
     st.markdown("---")
     
     # Tabla detallada con colores
-    st.subheader(f"📋 Detalle Mensual {año}")
+    st.subheader(f"📋 Detalle Mensual Año Fiscal {año_fiscal}")
     
     resumen_show = resumen_meses.copy()
     resumen_show['Ingreso'] = resumen_show['Ingreso'].apply(lambda x: format_number(x))
@@ -261,9 +375,9 @@ def mostrar_resumen_general(df, año, resumen_ly=None):
     resumen_show['Margen'] = resumen_show['Margen'].apply(lambda x: f"{x:.2f}%")
     
     st.dataframe(
-        resumen_show[['Mes_nombre', 'Ingreso', 'Gasto', 'Beneficio', 'Margen']],
+        resumen_show[['Mes_Año', 'Ingreso', 'Gasto', 'Beneficio', 'Margen']],
         column_config={
-            "Mes_nombre": "Mes",
+            "Mes_Año": "Mes y Año",
             "Ingreso": st.column_config.NumberColumn("Ingresos", format="$%.2f"),
             "Gasto": st.column_config.NumberColumn("Gastos", format="$%.2f"),
             "Beneficio": st.column_config.NumberColumn("Beneficio", format="$%.2f"),
@@ -273,13 +387,14 @@ def mostrar_resumen_general(df, año, resumen_ly=None):
         use_container_width=True
     )
     
-    pdf = crear_pdf(resumen, f"Resumen General {año}")
-    download_pdf(pdf, f"resumen_general_{año}")
+    pdf = crear_pdf(resumen, f"Resumen General Año Fiscal {año_fiscal}")
+    download_pdf(pdf, f"resumen_general_{año_fiscal}")
 
-def mostrar_evolucion(df, año):
-    st.title(f"📈 Evolución Mensual {año}")
+
+def mostrar_evolucion(df, año_fiscal):
+    st.title(f"📈 Evolución Mensual Año Fiscal {año_fiscal} (Oct {año_fiscal-1} - Sep {año_fiscal})")
     
-    resumen = calcular_resumen(df, año)
+    resumen = calcular_resumen(df, año_fiscal)
     if resumen.empty:
         st.warning("No hay datos para mostrar")
         return
@@ -287,47 +402,56 @@ def mostrar_evolucion(df, año):
     # Excluir el total para los gráficos
     resumen_meses = resumen[resumen['Mes_nombre'] != 'Total']
     
+    # Agregar año al nombre del mes
+    resumen_meses['Mes_Año'] = resumen_meses.apply(
+        lambda x: f"{x['Mes_nombre']} {x['Año_Real']}", 
+        axis=1
+    )
+    
     fig = px.line(
         resumen_meses,
-        x='Mes_nombre',
+        x='Mes_Año',
         y=['Ingreso', 'Gasto', 'Beneficio'],
-        title=f'Evolución Financiera {año}',
-        markers=True
+        title=f'Evolución Financiera (Año Fiscal {año_fiscal})',
+        markers=True,
+        labels={'Mes_Año': 'Mes y Año', 'value': 'Monto ($)'}
     )
     st.plotly_chart(fig, use_container_width=True)
     
-    st.subheader(f"Análisis Detallado {año}")
+    st.subheader(f"Análisis Detallado Año Fiscal {año_fiscal}")
     col1, col2 = st.columns(2)
     
     with col1:
         fig_ben = px.bar(
             resumen_meses,
-            x='Mes_nombre',
+            x='Mes_Año',
             y='Beneficio',
-            title=f'Beneficio por Mes {año}',
+            title=f'Beneficio por Mes - Año Fiscal {año_fiscal}',
             color='Beneficio',
-            color_continuous_scale='balance'
+            color_continuous_scale='balance',
+            labels={'Mes_Año': 'Mes y Año', 'Beneficio': 'Beneficio ($)'}
         )
         st.plotly_chart(fig_ben, use_container_width=True)
     
     with col2:
         fig_pie = px.pie(
             resumen_meses,
-            names='Mes_nombre',
+            names='Mes_Año',
             values='Ingreso',
-            title=f'Distribución de Ingresos {año}'
+            title=f'Distribución de Ingresos - Año Fiscal {año_fiscal}',
+            labels={'Mes_Año': 'Mes y Año', 'Ingreso': 'Ingresos ($)'}
         )
         st.plotly_chart(fig_pie, use_container_width=True)
 
-def mostrar_analisis_presupuesto(df, presupuesto, año):
-    st.title(f"📉 Análisis Presupuestario {año}")
+def mostrar_analisis_presupuesto(df, presupuesto, año_fiscal):
+    st.title(f"📉 Análisis Presupuestario Año Fiscal {año_fiscal} (Oct {año_fiscal-1} - Sep {año_fiscal})")
     
     if presupuesto is None:
         st.warning("No se encontraron datos de presupuesto")
         return
     
-    resumen_real = calcular_resumen(df, año)
-    resumen_presupuesto = presupuesto[presupuesto['Año'] == año]
+    resumen_real = calcular_resumen(df, año_fiscal)
+    resumen_presupuesto = presupuesto[presupuesto['Año_Fiscal'] == año_fiscal]
     
     if resumen_real.empty or resumen_presupuesto.empty:
         st.warning("Datos insuficientes para comparación")
@@ -335,6 +459,15 @@ def mostrar_analisis_presupuesto(df, presupuesto, año):
     
     # Excluir el total para la comparación
     resumen_real = resumen_real[resumen_real['Mes_nombre'] != 'Total']
+    
+    # Mostrar mes y año real para datos reales
+    resumen_real['Mes_Año'] = resumen_real.apply(
+        lambda x: f"{x['Mes_nombre']} {int(x['Año_Real'])}", 
+        axis=1
+    )
+    
+    # Para presupuesto, mostrar mes y año real también
+    resumen_presupuesto['Mes_Año'] = resumen_presupuesto['Mes'].dt.strftime('%B %Y')
     
     comparacion = pd.merge(
         resumen_real,
@@ -347,7 +480,7 @@ def mostrar_analisis_presupuesto(df, presupuesto, año):
     comparacion['Var_Ingreso'] = comparacion['Ingreso_Real'] - comparacion['Ingreso_Presupuesto']
     comparacion['Var_Gasto'] = comparacion['Gasto_Real'] - comparacion['Gasto_Presupuesto']
     
-    st.subheader(f"Comparativo Real vs Presupuesto {año}")
+    st.subheader(f"Comparativo Real vs Presupuesto Año Fiscal {año_fiscal}")
     
     # Formatear números para mostrar
     comparacion_show = comparacion.copy()
@@ -359,11 +492,11 @@ def mostrar_analisis_presupuesto(df, presupuesto, año):
     
     st.dataframe(
         comparacion_show[
-            ['Mes_nombre_Real', 'Ingreso_Real', 'Ingreso_Presupuesto', 'Var_Ingreso',
+            ['Mes_Año_Real', 'Ingreso_Real', 'Ingreso_Presupuesto', 'Var_Ingreso',
              'Gasto_Real', 'Gasto_Presupuesto', 'Var_Gasto']
         ],
         column_config={
-            "Mes_nombre_Real": "Mes",
+            "Mes_Año_Real": "Mes y Año",
             "Ingreso_Real": st.column_config.TextColumn("Ingreso Real"),
             "Ingreso_Presupuesto": st.column_config.TextColumn("Ingreso Presupuesto"),
             "Var_Ingreso": st.column_config.TextColumn("Variación Ingreso"),
@@ -377,19 +510,30 @@ def mostrar_analisis_presupuesto(df, presupuesto, año):
     
     fig = px.bar(
         comparacion,
-        x='Mes_nombre_Real',
+        x='Mes_Año_Real',
         y=['Var_Ingreso', 'Var_Gasto'],
         barmode='group',
-        title=f'Variaciones vs Presupuesto {año}'
+        title=f'Variaciones vs Presupuesto - Año Fiscal {año_fiscal}',
+        labels={'Mes_Año_Real': 'Mes y Año', 'value': 'Variación ($)'}
     )
     st.plotly_chart(fig, use_container_width=True)
 
-def mostrar_comparacion_anios(df, año_actual):
-    st.title("🔍 Comparación entre Años")
+# ... (continuar con las actualizaciones similares para las demás funciones)
+
+def mostrar_comparacion_anios(df, año_fiscal_actual):
+    st.title("🔍 Comparación entre Años Fiscales")
     
-    años_disponibles = sorted(df['Año'].unique(), reverse=True)
+    # Verificar columnas requeridas
+    required_cols = ['Año_Fiscal', 'Fecha', 'Tipo', 'Monto']
+    if not all(col in df.columns for col in required_cols):
+        missing = [col for col in required_cols if col not in df.columns]
+        st.error(f"Columnas faltantes en los datos: {missing}")
+        return
     
-    if len(años_disponibles) < 2:
+    # Extraer años fiscales disponibles
+    años_fiscales_disponibles = sorted(df['Año_Fiscal'].unique(), reverse=True)
+    
+    if len(años_fiscales_disponibles) < 2:
         st.warning("Se necesitan al menos 2 años de datos para comparar")
         return
     
@@ -397,43 +541,63 @@ def mostrar_comparacion_anios(df, año_actual):
     col1, col2 = st.columns(2)
     
     with col1:
-        año_base = st.selectbox(
-            "Seleccione el año base",
-            options=años_disponibles,
+        año_fiscal_base = st.selectbox(
+            "Seleccione el año fiscal base",
+            options=años_fiscales_disponibles,
             index=0,
             key="año_base"
         )
     
     with col2:
         # Excluir el año ya seleccionado en el primer selector
-        años_restantes = [a for a in años_disponibles if a != año_base]
-        año_comparar = st.selectbox(
-            "Seleccione el año a comparar",
+        años_restantes = [a for a in años_fiscales_disponibles if a != año_fiscal_base]
+        año_fiscal_comparar = st.selectbox(
+            "Seleccione el año fiscal a comparar",
             options=años_restantes,
             index=0 if len(años_restantes) > 0 else None,
             key="año_comparar"
         )
     
-    if año_base == año_comparar:
+    if año_fiscal_base == año_fiscal_comparar:
         st.warning("Por favor seleccione dos años diferentes para comparar")
         return
     
-    # Filtrar y calcular resúmenes para cada año
-    df_base = df[df['Año'] == año_base]
-    df_comparar = df[df['Año'] == año_comparar]
+    # Filtrar y calcular resúmenes para cada año fiscal
+    df_base = df[df['Año_Fiscal'] == año_fiscal_base]
+    df_comparar = df[df['Año_Fiscal'] == año_fiscal_comparar]
     
-    resumen_base = calcular_resumen(df, año_base)
-    resumen_comparar = calcular_resumen(df, año_comparar)
+    resumen_base = calcular_resumen(df_base, año_fiscal_base)
+    resumen_comparar = calcular_resumen(df_comparar, año_fiscal_comparar)
     
-    # Verificar que hay datos para ambos años
+    # Verificar que hay datos para ambos años fiscales
     if resumen_base.empty or resumen_comparar.empty:
         st.warning("No hay suficientes datos para realizar la comparación")
         return
     
     # Obtener datos mensuales (excluyendo la fila 'Total')
-    meses_base = resumen_base[resumen_base['Mes_nombre'] != 'Total']
-    meses_comparar = resumen_comparar[resumen_comparar['Mes_nombre'] != 'Total']
+    meses_base = resumen_base[resumen_base['Mes_nombre'] != 'Total'].copy()
+    meses_comparar = resumen_comparar[resumen_comparar['Mes_nombre'] != 'Total'].copy()
     
+    # Asegurar que tenemos las columnas necesarias
+    for df_temp in [meses_base, meses_comparar]:
+        if 'Mes_nombre' not in df_temp.columns:
+            if 'Fecha' in df_temp.columns:
+                df_temp['Mes_nombre'] = df_temp['Fecha'].dt.strftime('%B')
+            else:
+                st.error("No se encontró columna de mes en los datos")
+                return
+    
+    # Crear columna Mes_Año con el año real
+    meses_base['Mes_Año'] = meses_base.apply(
+        lambda x: f"{x['Mes_nombre']} {int(x['Año_Real'])}", 
+        axis=1
+    )
+    
+    meses_comparar['Mes_Año'] = meses_comparar.apply(
+        lambda x: f"{x['Mes_nombre']} {int(x['Año_Real'])}", 
+        axis=1
+    )
+        
     # Calcular totales anuales
     total_ingreso_base = meses_base['Ingreso'].sum()
     total_ingreso_comparar = meses_comparar['Ingreso'].sum()
@@ -458,71 +622,69 @@ def mostrar_comparacion_anios(df, año_actual):
     var_margen = margen_base - margen_comparar  # Diferencia en puntos porcentuales
     
     # Mostrar KPIs comparativos
-    st.subheader(f"📊 Comparación Anual: {año_base} vs {año_comparar}")
+    st.subheader(f"📊 Comparación Anual: Año Fiscal {año_fiscal_base} vs {año_fiscal_comparar}")
     
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.metric(
-            f"Ingresos {año_base}",
+            f"Ingresos {año_fiscal_base}",
             format_number(total_ingreso_base),
-            delta=f"{var_ingreso:.1f}% vs {año_comparar}",
-            help=f"Comparación con {año_comparar}"
+            delta=f"{var_ingreso:.1f}% vs {año_fiscal_comparar}",
+            help=f"Comparación con Año Fiscal {año_fiscal_comparar}"
         )
     
     with col2:
         st.metric(
-            f"Gastos {año_base}",
+            f"Gastos {año_fiscal_base}",
             format_number(total_gasto_base),
-            delta=f"{var_gasto:.1f}% vs {año_comparar}",
-            help=f"Comparación con {año_comparar}"
+            delta=f"{var_gasto:.1f}% vs {año_fiscal_comparar}",
+            help=f"Comparación con Año Fiscal {año_fiscal_comparar}"
         )
     
     with col3:
         st.metric(
-            f"Beneficio {año_base}",
+            f"Beneficio {año_fiscal_base}",
             format_number(total_beneficio_base),
-            delta=f"{var_beneficio:.1f}% vs {año_comparar}",
-            help=f"Comparación con {año_comparar}"
+            delta=f"{var_beneficio:.1f}% vs {año_fiscal_comparar}",
+            help=f"Comparación con Año Fiscal {año_fiscal_comparar}"
         )
     
     with col4:
         st.metric(
-            f"Margen {año_base}",
+            f"Margen {año_fiscal_base}",
             f"{margen_base:.1f}%",
-            delta=f"{var_margen:.1f}pp vs {año_comparar}",
-            help=f"Diferencia en puntos porcentuales vs {año_comparar}"
+            delta=f"{var_margen:.1f}pp vs {año_fiscal_comparar}",
+            help=f"Diferencia en puntos porcentuales vs Año Fiscal {año_fiscal_comparar}"
         )
     
     st.markdown("---")
     
     # Crear DataFrame combinado para gráficos
     df_comparativo = pd.concat([
-        meses_base.assign(Periodo=str(año_base)),
-        meses_comparar.assign(Periodo=str(año_comparar))
+        meses_base.assign(Periodo=f"Año Fiscal {año_fiscal_base}"),
+        meses_comparar.assign(Periodo=f"Año Fiscal {año_fiscal_comparar}")
     ])
     
     # Gráfico de ingresos
     fig_ingresos = px.bar(
         df_comparativo, 
-        x='Mes_nombre', 
+        x='Mes_Año', 
         y='Ingreso',
         color='Periodo', 
         barmode='group',
-        title=f'Ingresos Mensuales: {año_base} vs {año_comparar}',
-        labels={'Ingreso': 'Ingresos ($)', 'Mes_nombre': 'Mes'}
+        title=f'Ingresos Mensuales: {año_fiscal_base} vs {año_fiscal_comparar}',
+        color_discrete_sequence=[COLORES['ingresos'], COLORES['destacado']]
     )
-    st.plotly_chart(fig_ingresos, use_container_width=True)
     
-    # Gráfico de gastos
     fig_gastos = px.bar(
         df_comparativo, 
-        x='Mes_nombre', 
+        x='Mes_Año', 
         y='Gasto',
         color='Periodo', 
         barmode='group',
-        title=f'Gastos Mensuales: {año_base} vs {año_comparar}',
-        labels={'Gasto': 'Gastos ($)', 'Mes_nombre': 'Mes'}
+        title=f'Gastos Mensuales: {año_fiscal_base} vs {año_fiscal_comparar}',
+        color_discrete_sequence=[COLORES['gastos'], COLORES['destacado']]
     )
     st.plotly_chart(fig_gastos, use_container_width=True)
     
@@ -533,7 +695,7 @@ def mostrar_comparacion_anios(df, año_actual):
         y='Beneficio',
         color='Periodo', 
         barmode='group',
-        title=f'Beneficios Mensuales: {año_base} vs {año_comparar}',
+        title=f'Beneficios Mensuales: {año_fiscal_base} vs {año_fiscal_comparar}',
         labels={'Beneficio': 'Beneficio ($)', 'Mes_nombre': 'Mes'}
     )
     st.plotly_chart(fig_beneficios, use_container_width=True)
@@ -544,7 +706,7 @@ def mostrar_comparacion_anios(df, año_actual):
         x='Mes_nombre', 
         y='Margen',
         color='Periodo',
-        title=f'Margen Mensual (%): {año_base} vs {año_comparar}',
+        title=f'Margen Mensual (%): {año_fiscal_base} vs {año_fiscal_comparar}',
         labels={'Margen': 'Margen (%)', 'Mes_nombre': 'Mes'},
         markers=True
     )
@@ -560,18 +722,18 @@ def mostrar_comparacion_anios(df, año_actual):
         meses_base,
         meses_comparar,
         on='Mes_num',
-        suffixes=(f'_{año_base}', f'_{año_comparar}'),
+        suffixes=(f'_{año_fiscal_base}', f'_{año_fiscal_comparar}'),
         how='outer'
     ).sort_values('Mes_num')
     
     # Calcular variaciones
-    comparacion['Var_Ingreso_$'] = comparacion[f'Ingreso_{año_base}'].fillna(0) - comparacion[f'Ingreso_{año_comparar}'].fillna(0)
-    comparacion['Var_Ingreso_%'] = (comparacion['Var_Ingreso_$'] / comparacion[f'Ingreso_{año_comparar}'].replace(0, np.nan)) * 100
-    comparacion['Var_Gasto_$'] = comparacion[f'Gasto_{año_base}'].fillna(0) - comparacion[f'Gasto_{año_comparar}'].fillna(0)
-    comparacion['Var_Gasto_%'] = (comparacion['Var_Gasto_$'] / comparacion[f'Gasto_{año_comparar}'].replace(0, np.nan)) * 100
-    comparacion['Var_Beneficio_$'] = comparacion[f'Beneficio_{año_base}'].fillna(0) - comparacion[f'Beneficio_{año_comparar}'].fillna(0)
-    comparacion['Var_Beneficio_%'] = (comparacion['Var_Beneficio_$'] / comparacion[f'Beneficio_{año_comparar}'].replace(0, np.nan).abs()) * 100
-    comparacion['Var_Margen_pp'] = comparacion[f'Margen_{año_base}'].fillna(0) - comparacion[f'Margen_{año_comparar}'].fillna(0)
+    comparacion['Var_Ingreso_$'] = comparacion[f'Ingreso_{año_fiscal_base}'].fillna(0) - comparacion[f'Ingreso_{año_fiscal_comparar}'].fillna(0)
+    comparacion['Var_Ingreso_%'] = (comparacion['Var_Ingreso_$'] / comparacion[f'Ingreso_{año_fiscal_comparar}'].replace(0, np.nan)) * 100
+    comparacion['Var_Gasto_$'] = comparacion[f'Gasto_{año_fiscal_base}'].fillna(0) - comparacion[f'Gasto_{año_fiscal_comparar}'].fillna(0)
+    comparacion['Var_Gasto_%'] = (comparacion['Var_Gasto_$'] / comparacion[f'Gasto_{año_fiscal_comparar}'].replace(0, np.nan)) * 100
+    comparacion['Var_Beneficio_$'] = comparacion[f'Beneficio_{año_fiscal_base}'].fillna(0) - comparacion[f'Beneficio_{año_fiscal_comparar}'].fillna(0)
+    comparacion['Var_Beneficio_%'] = (comparacion['Var_Beneficio_$'] / comparacion[f'Beneficio_{año_fiscal_comparar}'].replace(0, np.nan).abs()) * 100
+    comparacion['Var_Margen_pp'] = comparacion[f'Margen_{año_fiscal_base}'].fillna(0) - comparacion[f'Margen_{año_fiscal_comparar}'].fillna(0)
     
     # Formatear valores para mostrar
     def formatear_valor(x, es_moneda=True):
@@ -586,36 +748,36 @@ def mostrar_comparacion_anios(df, año_actual):
     
     # Aplicar formato
     for col in comparacion.columns:
-        if '_$' in col or col in [f'Ingreso_{año_base}', f'Ingreso_{año_comparar}', 
-                                f'Gasto_{año_base}', f'Gasto_{año_comparar}', 
-                                f'Beneficio_{año_base}', f'Beneficio_{año_comparar}']:
+        if '_$' in col or col in [f'Ingreso_{año_fiscal_base}', f'Ingreso_{año_fiscal_comparar}', 
+                                f'Gasto_{año_fiscal_base}', f'Gasto_{año_fiscal_comparar}', 
+                                f'Beneficio_{año_fiscal_base}', f'Beneficio_{año_fiscal_comparar}']:
             comparacion[col] = comparacion[col].apply(lambda x: formatear_valor(x, True))
-        elif '_%' in col or '_pp' in col or col in [f'Margen_{año_base}', f'Margen_{año_comparar}']:
+        elif '_%' in col or '_pp' in col or col in [f'Margen_{año_fiscal_base}', f'Margen_{año_fiscal_comparar}']:
             comparacion[col] = comparacion[col].apply(lambda x: formatear_valor(x, False))
     
     # Mostrar tabla
     st.dataframe(
-        comparacion[[f'Mes_nombre_{año_base}',
-                    f'Ingreso_{año_base}', f'Ingreso_{año_comparar}', 'Var_Ingreso_$', 'Var_Ingreso_%',
-                    f'Gasto_{año_base}', f'Gasto_{año_comparar}', 'Var_Gasto_$', 'Var_Gasto_%',
-                    f'Beneficio_{año_base}', f'Beneficio_{año_comparar}', 'Var_Beneficio_$', 'Var_Beneficio_%',
-                    f'Margen_{año_base}', f'Margen_{año_comparar}', 'Var_Margen_pp']],
+        comparacion[[f'Mes_nombre_{año_fiscal_base}',
+                    f'Ingreso_{año_fiscal_base}', f'Ingreso_{año_fiscal_comparar}', 'Var_Ingreso_$', 'Var_Ingreso_%',
+                    f'Gasto_{año_fiscal_base}', f'Gasto_{año_fiscal_comparar}', 'Var_Gasto_$', 'Var_Gasto_%',
+                    f'Beneficio_{año_fiscal_base}', f'Beneficio_{año_fiscal_comparar}', 'Var_Beneficio_$', 'Var_Beneficio_%',
+                    f'Margen_{año_fiscal_base}', f'Margen_{año_fiscal_comparar}', 'Var_Margen_pp']],
         column_config={
-            f"Mes_nombre_{año_base}": "Mes",
-            f"Ingreso_{año_base}": f"Ingreso {año_base}",
-            f"Ingreso_{año_comparar}": f"Ingreso {año_comparar}",
+            f"Mes_nombre_{año_fiscal_base}": "Mes",
+            f"Ingreso_{año_fiscal_base}": f"Ingreso {año_fiscal_base}",
+            f"Ingreso_{año_fiscal_comparar}": f"Ingreso {año_fiscal_comparar}",
             "Var_Ingreso_$": "Variación ($)",
             "Var_Ingreso_%": "Variación (%)",
-            f"Gasto_{año_base}": f"Gasto {año_base}",
-            f"Gasto_{año_comparar}": f"Gasto {año_comparar}",
+            f"Gasto_{año_fiscal_base}": f"Gasto {año_fiscal_base}",
+            f"Gasto_{año_fiscal_comparar}": f"Gasto {año_fiscal_comparar}",
             "Var_Gasto_$": "Variación ($)",
             "Var_Gasto_%": "Variación (%)",
-            f"Beneficio_{año_base}": f"Beneficio {año_base}",
-            f"Beneficio_{año_comparar}": f"Beneficio {año_comparar}",
+            f"Beneficio_{año_fiscal_base}": f"Beneficio {año_fiscal_base}",
+            f"Beneficio_{año_fiscal_comparar}": f"Beneficio {año_fiscal_comparar}",
             "Var_Beneficio_$": "Variación ($)",
             "Var_Beneficio_%": "Variación (%)",
-            f"Margen_{año_base}": f"Margen {año_base} (%)",
-            f"Margen_{año_comparar}": f"Margen {año_comparar} (%)",
+            f"Margen_{año_fiscal_base}": f"Margen {año_fiscal_base} (%)",
+            f"Margen_{año_fiscal_comparar}": f"Margen {año_fiscal_comparar} (%)",
             "Var_Margen_pp": "Variación (pp)"
         },
         hide_index=True,
@@ -624,19 +786,25 @@ def mostrar_comparacion_anios(df, año_actual):
     )
     
     # Generar PDF
-    pdf = crear_pdf(comparacion, f"Comparativo {año_base} vs {año_comparar}")
-    download_pdf(pdf, f"comparativo_{año_base}_vs_{año_comparar}")
+    pdf = crear_pdf(comparacion, f"Comparativo {año_fiscal_base} vs {año_fiscal_comparar}")
+    download_pdf(pdf, f"comparativo_{año_fiscal_base}_vs_{año_fiscal_comparar}")
 
-def mostrar_reporte_completo(df, año, presupuesto=None):
-    st.title(f"📑 Reporte Completo {año}")
+def mostrar_reporte_completo(df, año_fiscal):
+    st.title(f"📑 Reporte Completo Año Fiscal {año_fiscal} (Oct {año_fiscal-1} - Sep {año_fiscal})")
     
-    resumen = calcular_resumen(df, año)
+    resumen = calcular_resumen(df, año_fiscal)
     if resumen.empty:
         st.warning("No hay datos para mostrar")
         return
     
     # Excluir el total para los gráficos
     resumen_meses = resumen[resumen['Mes_nombre'] != 'Total']
+    
+    # Mostrar mes con año real
+    resumen_meses['Mes_Año'] = resumen_meses.apply(
+        lambda x: f"{x['Mes_nombre']} {int(x['Año_Real'])}", 
+        axis=1
+    )
     
     # Resumen ejecutivo
     st.subheader("📌 Resumen Ejecutivo")
@@ -658,39 +826,39 @@ def mostrar_reporte_completo(df, año, presupuesto=None):
     st.markdown(f"""
     - **Margen promedio anual**: {margen_promedio:.2f}%
     - **Meses con pérdidas**: {len(resumen_meses[resumen_meses['Beneficio'] < 0])}
-    - **Mejor mes**: {resumen_meses.loc[resumen_meses['Beneficio'].idxmax(), 'Mes_nombre']} ({format_number(resumen_meses['Beneficio'].max())})
-    - **Peor mes**: {resumen_meses.loc[resumen_meses['Beneficio'].idxmin(), 'Mes_nombre']} ({format_number(resumen_meses['Beneficio'].min())})
+    - **Mejor mes**: {resumen_meses.loc[resumen_meses['Beneficio'].idxmax(), 'Mes_Año']} ({format_number(resumen_meses['Beneficio'].max())})
+    - **Peor mes**: {resumen_meses.loc[resumen_meses['Beneficio'].idxmin(), 'Mes_Año']} ({format_number(resumen_meses['Beneficio'].min())})
     """)
     
     st.markdown("---")
     
-    # Análisis detallado por mes
+    # Gráficos de análisis
     st.subheader("📈 Análisis Detallado por Mes")
     
     fig_combinado = go.Figure()
     fig_combinado.add_trace(go.Bar(
-        x=resumen_meses['Mes_nombre'],
+        x=resumen_meses['Mes_Año'],
         y=resumen_meses['Ingreso'],
         name='Ingresos',
-        marker_color='#2ecc71'
+        marker_color=COLORES['ingresos']
     ))
     fig_combinado.add_trace(go.Bar(
-        x=resumen_meses['Mes_nombre'],
+        x=resumen_meses['Mes_Año'],
         y=resumen_meses['Gasto'],
         name='Gastos',
-        marker_color='#e74c3c'
+        marker_color=COLORES['gastos']
     ))
     fig_combinado.add_trace(go.Scatter(
-        x=resumen_meses['Mes_nombre'],
+        x=resumen_meses['Mes_Año'],
         y=resumen_meses['Beneficio'],
         name='Beneficio',
         mode='lines+markers',
-        line=dict(color='#3498db', width=3),
+        line=dict(color=COLORES['beneficio'], width=3),
         yaxis='y2'
     ))
     
     fig_combinado.update_layout(
-        title=f'Ingresos, Gastos y Beneficio por Mes {año}',
+        title=f'Ingresos, Gastos y Beneficio por Mes (Año Fiscal {año_fiscal})',
         barmode='group',
         yaxis=dict(title='Ingresos/Gastos ($)'),
         yaxis2=dict(
@@ -706,25 +874,24 @@ def mostrar_reporte_completo(df, año, presupuesto=None):
     # Gráfico de margen con objetivo
     fig_margen = go.Figure()
     fig_margen.add_trace(go.Bar(
-        x=resumen_meses['Mes_nombre'],
+        x=resumen_meses['Mes_Año'],
         y=resumen_meses['Margen'],
         name='Margen Real',
-        marker_color='#9b59b6'
+        marker_color=COLORES['margen']
     ))
     
-    # Línea de objetivo (20% como ejemplo)
     fig_margen.add_shape(
         type='line',
         x0=-0.5,
         y0=20,
         x1=len(resumen_meses)-0.5,
         y1=20,
-        line=dict(color='#f39c12', width=3, dash='dot'),
+        line=dict(color=COLORES['linea'], width=3, dash='dot'),
         name='Objetivo'
     )
     
     fig_margen.update_layout(
-        title=f'Margen por Mes vs Objetivo (20%) {año}',
+        title=f'Margen por Mes vs Objetivo (20%) (Año Fiscal {año_fiscal})',
         yaxis=dict(title='Margen (%)'),
         hovermode='x'
     )
@@ -743,9 +910,9 @@ def mostrar_reporte_completo(df, año, presupuesto=None):
     resumen_audit['Margen'] = resumen_audit['Margen'].apply(lambda x: f"{x:.2f}%")
     
     st.dataframe(
-        resumen_audit[['Mes_nombre', 'Ingreso', 'Gasto', 'Beneficio', 'Margen']],
+        resumen_audit[['Mes_Año', 'Ingreso', 'Gasto', 'Beneficio', 'Margen']],
         column_config={
-            "Mes_nombre": "Mes",
+            "Mes_Año": "Mes y Año",
             "Ingreso": st.column_config.TextColumn("Ingresos"),
             "Gasto": st.column_config.TextColumn("Gastos"),
             "Beneficio": st.column_config.TextColumn("Beneficio"),
@@ -754,83 +921,6 @@ def mostrar_reporte_completo(df, año, presupuesto=None):
         hide_index=True,
         use_container_width=True
     )
-    
-    # Análisis presupuestario si hay datos
-    if presupuesto is not None:
-        st.markdown("---")
-        st.subheader("📉 Análisis Presupuestario")
-        
-        resumen_presup = presupuesto[presupuesto['Año'] == año]
-        
-        if not resumen_presup.empty:
-            comparacion_presup = pd.merge(
-                resumen_meses,
-                resumen_presup,
-                on=['Año', 'Mes_num'],
-                suffixes=('_Real', '_Presupuesto'),
-                how='left'
-            )
-            
-            comparacion_presup['Var_Ingreso_$'] = comparacion_presup['Ingreso_Real'] - comparacion_presup['Ingreso_Presupuesto']
-            comparacion_presup['Var_Gasto_$'] = comparacion_presup['Gasto_Real'] - comparacion_presup['Gasto_Presupuesto']
-            comparacion_presup['Var_Beneficio_$'] = (comparacion_presup['Ingreso_Real'] - comparacion_presup['Gasto_Real']) - (comparacion_presup['Ingreso_Presupuesto'] - comparacion_presup['Gasto_Presupuesto'])
-            
-            comparacion_presup['Var_Ingreso_%'] = (comparacion_presup['Var_Ingreso_$'] / comparacion_presup['Ingreso_Presupuesto']) * 100
-            comparacion_presup['Var_Gasto_%'] = (comparacion_presup['Var_Gasto_$'] / comparacion_presup['Gasto_Presupuesto']) * 100
-            comparacion_presup['Var_Beneficio_%'] = (comparacion_presup['Var_Beneficio_$'] / (comparacion_presup['Ingreso_Presupuesto'] - comparacion_presup['Gasto_Presupuesto'])) * 100
-            
-            st.markdown("---")
-            
-            # Gráficos comparativos
-            st.subheader("📊 Comparativo Real vs Presupuesto")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                fig_ing = px.bar(comparacion_presup, x="Mes_nombre_Real", 
-                                y=["Ingreso_Real", "Ingreso_Presupuesto"], 
-                                barmode="group",
-                                color_discrete_map={"Ingreso_Real": "#3498db", "Ingreso_Presupuesto": "#2980b9"},
-                                labels={"value": "Monto ($)", "variable": "Tipo"})
-                st.plotly_chart(fig_ing, use_container_width=True)
-
-            with col2:
-                fig_gasto = px.bar(comparacion_presup, x="Mes_nombre_Real", 
-                                  y=["Gasto_Real", "Gasto_Presupuesto"], 
-                                  barmode="group",
-                                  color_discrete_map={"Gasto_Real": "#e74c3c", "Gasto_Presupuesto": "#c0392b"},
-                                  labels={"value": "Monto ($)", "variable": "Tipo"})
-                st.plotly_chart(fig_gasto, use_container_width=True)
-
-            st.markdown("---")
-            
-            # Tabla comparativa con colores
-            st.subheader("📋 Variaciones Respecto al Presupuesto")
-            
-            comparacion_show = comparacion_presup[[
-                "Mes_nombre_Real", 
-                "Ingreso_Real", "Ingreso_Presupuesto", "Var_Ingreso_$", "Var_Ingreso_%",
-                "Gasto_Real", "Gasto_Presupuesto", "Var_Gasto_$", "Var_Gasto_%",
-                "Beneficio_Real", "Beneficio_Presupuesto", "Var_Beneficio_$", "Var_Beneficio_%"
-            ]].copy()
-            
-            currency_cols = ["Ingreso_Real", "Ingreso_Presupuesto", "Var_Ingreso_$", 
-                            "Gasto_Real", "Gasto_Presupuesto", "Var_Gasto_$",
-                            "Beneficio_Real", "Beneficio_Presupuesto", "Var_Beneficio_$"]
-            
-            percent_cols = ["Var_Ingreso_%", "Var_Gasto_%", "Var_Beneficio_%"]
-            
-            for col in currency_cols:
-                comparacion_show[col] = comparacion_show[col].apply(lambda x: format_number(x) if not pd.isna(x) else "-")
-            
-            for col in percent_cols:
-                comparacion_show[col] = comparacion_show[col].apply(lambda x: f"{x:.2f}%" if not pd.isna(x) else "-")
-            
-            st.dataframe(
-                comparacion_show,
-                hide_index=True,
-                use_container_width=True
-            )
     
     # Información adicional para auditoría
     st.markdown("---")
@@ -852,13 +942,13 @@ def mostrar_reporte_completo(df, año, presupuesto=None):
         - Los meses sin datos no aparecen en los análisis
         """)
     
-    pdf = crear_pdf(resumen, f"Reporte Completo {año}")
-    download_pdf(pdf, f"reporte_completo_{año}")
+    pdf = crear_pdf(resumen, f"Reporte Completo {año_fiscal}")
+    download_pdf(pdf, f"reporte_completo_{año_fiscal}")
 
 # Función principal
 def main():
     # Cargar datos
-    df, presupuesto = cargar_datos()
+    df = cargar_datos()
     
     if df.empty:
         st.error("No se pudieron cargar los datos principales")
@@ -868,20 +958,15 @@ def main():
     with st.sidebar:
         st.title("⚙️ Panel de Control")
         
-        tabs = [
-            "📊 Resumen General",
-            "📈 Evolución Mensual", 
-            "📉 Análisis Presupuestario",
-            "🔍 Comparación entre Años",
-            "📑 Reporte Completo"
-        ]
+        tabs = ["📊 Resumen General", "📈 Evolución Mensual", "🔍 Comparación entre Años", "📑 Reporte Completo"]
         seccion = st.radio("Navegación", tabs)
         
         st.subheader("Filtros")
-        año = st.selectbox(
-            "Año",
-            options=sorted(df['Año'].unique(), reverse=True),
-            index=0
+        año_fiscal = st.selectbox(
+            "Año Fiscal",
+            options=sorted(df['Año_Fiscal'].unique(), reverse=True),
+            index=0,
+            help="Año fiscal va de Octubre a Septiembre (ej. 2024 = Oct2023-Sep2024)"
         )
         
         tipos = df['Tipo'].unique()
@@ -891,27 +976,18 @@ def main():
             default=tipos
         )
 
-    # Filtrar datos basado en los filtros actuales
-    df_filtrado = df[(df['Año'] == año) & (df['Tipo'].isin(tipos_sel))]
+    # Filtrar datos
+    df_filtrado = df[(df['Año_Fiscal'] == año_fiscal) & (df['Tipo'].isin(tipos_sel))]
     
-    # Obtener datos del año anterior para comparación (solo para Resumen General)
-    año_anterior = año - 1
-    df_ly = df[(df['Año'] == año_anterior) & (df['Tipo'].isin(tipos_sel))]
-    resumen_ly = calcular_resumen(df_ly) if not df_ly.empty else None
-    
-    # Mostrar sección seleccionada con datos filtrados
+    # Mostrar sección seleccionada
     if seccion == "📊 Resumen General":
-        mostrar_resumen_general(df_filtrado, año, resumen_ly)
+        mostrar_resumen_general(df_filtrado, año_fiscal)
     elif seccion == "📈 Evolución Mensual":
-        mostrar_evolucion(df_filtrado, año)
-    elif seccion == "📉 Análisis Presupuestario":
-        mostrar_analisis_presupuesto(df_filtrado, presupuesto, año)
+        mostrar_evolucion(df_filtrado, año_fiscal)
     elif seccion == "🔍 Comparación entre Años":
-        # Para comparación usamos todos los datos (sin filtrar por año) pero sí por tipos
-        mostrar_comparacion_anios(df[df['Tipo'].isin(tipos_sel)], año)
+        mostrar_comparacion_anios(df[df['Tipo'].isin(tipos_sel)], año_fiscal)
     elif seccion == "📑 Reporte Completo":
-        mostrar_reporte_completo(df_filtrado, año, presupuesto)
-
+        mostrar_reporte_completo(df_filtrado, año_fiscal)
     # Mensaje final
     st.markdown("---")
     st.markdown("""
