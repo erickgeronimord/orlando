@@ -91,15 +91,9 @@ def format_number(x, is_currency=True):
 @st.cache_data
 def cargar_datos():
     try:
-        # ID del archivo de Google Drive (extraído de la URL)
-        file_id = "1Rg8wMJPbQAo7g3Pp6_NyIbVsE27sYESB"
-        
-        # URL de exportación directa (formato Excel)
-        url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
-        
-        # Leer el archivo directamente
+        ruta = Path(r"D:\Desktop2\TRABAJO BD\PROYECTOS_DB\ORLANDO\DASHBOARD\data2.xlsx")
         df = pd.read_excel(
-            url,
+            ruta,
             sheet_name=0,
             parse_dates=['Fecha'],
             thousands=',',
@@ -198,41 +192,26 @@ def calcular_resumen(_df, año_fiscal=None):
 
 def crear_pdf(data, titulo):
     try:
-        # Verificación inicial de datos
-        if data is None or data.empty:
+        if data.empty:
             st.warning("No hay datos para generar el PDF")
             return None
             
-        # Verificar columnas requeridas
-        required_columns = {
-            'Mes': ['Mes_nombre', 'Mes', 'Fecha'],
-            'Ingreso': ['Ingreso'],
-            'Gasto': ['Gasto'],
-            'Beneficio': ['Beneficio'],
-            'Margen': ['Margen']
-        }
-        
-        # Encontrar los nombres reales de las columnas
-        column_mapping = {}
-        for col_type, possible_names in required_columns.items():
-            found = False
-            for name in possible_names:
-                if name in data.columns:
-                    column_mapping[col_type] = name
-                    found = True
-                    break
-            if not found:
-                st.error(f"No se encontró columna para: {col_type}. Columnas disponibles: {list(data.columns)}")
-                return None
+        # Verificar nombres alternativos de columnas
+        mes_col = 'Mes_nombre' if 'Mes_nombre' in data.columns else \
+                 'Mes' if 'Mes' in data.columns else \
+                 'Fecha' if 'Fecha' in data.columns else None
+                 
+        if mes_col is None:
+            st.error("No se encontró columna de mes en los datos")
+            return None
 
-        # Crear PDF
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", size=12)
         pdf.cell(200, 10, txt=titulo, ln=1, align='C')
         
-        # Configuración de la tabla
-        col_widths = [40, 30, 30, 30, 30]
+        # Configurar anchos de columnas
+        col_widths = [40, 30, 30, 30, 30]  # Ajustar según necesidad
         row_height = pdf.font_size * 1.5
         
         # Encabezados
@@ -246,22 +225,18 @@ def crear_pdf(data, titulo):
         # Datos
         pdf.set_font("Arial", size=10)
         for _, row in data.iterrows():
-            # Texto para el mes
-            mes_col = column_mapping['Mes']
+            # Determinar texto para la columna de mes
             if mes_col == 'Fecha':
-                mes_text = row['Fecha'].strftime('%B %Y') if pd.notna(row['Fecha']) else 'N/A'
+                mes_text = row['Fecha'].strftime('%B %Y')  # Formato "Mes Año"
             else:
-                mes_text = str(row[mes_col]) if pd.notna(row[mes_col]) else 'N/A'
+                mes_text = str(row[mes_col])
             
-            # Formatear valores
-            ingreso = format_number(row[column_mapping['Ingreso']]) if pd.notna(row[column_mapping['Ingreso']]) else "N/A"
-            gasto = format_number(row[column_mapping['Gasto']]) if pd.notna(row[column_mapping['Gasto']]) else "N/A"
-            beneficio = format_number(row[column_mapping['Beneficio']]) if pd.notna(row[column_mapping['Beneficio']]) else "N/A"
+            # Formatear números
+            ingreso = format_number(row['Ingreso']) if 'Ingreso' in row else "N/A"
+            gasto = format_number(row['Gasto']) if 'Gasto' in row else "N/A"
+            beneficio = format_number(row['Beneficio']) if 'Beneficio' in row else "N/A"
+            margen = f"{row['Margen']:.2f}%" if 'Margen' in row else "N/A"
             
-            margen_val = row[column_mapping['Margen']] if pd.notna(row[column_mapping['Margen']]) else 0
-            margen = f"{margen_val:.2f}%" if isinstance(margen_val, (int, float)) else str(margen_val)
-            
-            # Añadir fila al PDF
             pdf.cell(col_widths[0], row_height, txt=mes_text, border=1)
             pdf.cell(col_widths[1], row_height, txt=ingreso, border=1)
             pdf.cell(col_widths[2], row_height, txt=gasto, border=1)
@@ -272,37 +247,19 @@ def crear_pdf(data, titulo):
         return pdf
         
     except Exception as e:
-        st.error(f"Error crítico al crear PDF: {str(e)}")
-        st.error(f"Tipo de error: {type(e).__name__}")
+        st.error(f"Error al crear PDF: {str(e)}")
         return None
 
 def download_pdf(pdf, filename):
-    try:
-        if pdf is None:
-            st.warning("No hay PDF disponible para descargar")
-            return
-            
-        # Generar bytes del PDF
-        pdf_output = pdf.output(dest='S')
-        if not pdf_output:
-            st.error("La generación del PDF no produjo ningún resultado")
-            return
-            
-        pdf_bytes = pdf_output.encode('latin-1')
-        
-        # Crear botón de descarga
+    if pdf:
+        pdf_bytes = pdf.output(dest='S').encode('latin-1')
         st.download_button(
             label="📥 Descargar Reporte",
             data=pdf_bytes,
             file_name=f"{filename}.pdf",
-            mime="application/pdf",
-            key=f"btn_{filename}"  # Clave única para evitar duplicados
+            mime="application/pdf"
         )
-        
-    except Exception as e:
-        st.error(f"Error al preparar la descarga del PDF: {str(e)}")
-        st.error(f"Tipo de error: {type(e).__name__}")
-        
+
 # Funciones de visualización
 def mostrar_resumen_general(df, año_fiscal, resumen_ly=None):
     st.title(f"📊 Resumen General Año Fiscal {año_fiscal} (Oct {año_fiscal-1} - Sep {año_fiscal})")
