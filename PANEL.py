@@ -91,9 +91,15 @@ def format_number(x, is_currency=True):
 @st.cache_data
 def cargar_datos():
     try:
-        ruta = Path(r"D:\Desktop2\TRABAJO BD\PROYECTOS_DB\ORLANDO\DASHBOARD\data2.xlsx")
+       # ID del archivo de Google Drive (extraído de la URL)
+        file_id = "1Rg8wMJPbQAo7g3Pp6_NyIbVsE27sYESB"
+        
+        # URL de exportación directa (formato Excel)
+        url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
+        
+        # Leer el archivo directamente
         df = pd.read_excel(
-            ruta,
+            url,
             sheet_name=0,
             parse_dates=['Fecha'],
             thousands=',',
