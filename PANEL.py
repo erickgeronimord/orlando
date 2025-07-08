@@ -30,12 +30,17 @@ COLORES = {
 }
 
 # Funciones auxiliares
-@st.cache_data
 def cargar_datos():
     try:
-        ruta = Path(r"D:\Desktop2\TRABAJO BD\PROYECTOS_DB\ORLANDO\DASHBOARD\data2.xlsx")
+        # ID del archivo de Google Drive (extraído de la URL)
+        file_id = "1Rg8wMJPbQAo7g3Pp6_NyIbVsE27sYESB"
+        
+        # URL de exportación directa (formato Excel)
+        url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
+        
+        # Leer el archivo directamente
         df = pd.read_excel(
-            ruta,
+            url,
             sheet_name=0,
             parse_dates=['Fecha'],
             thousands=',',
@@ -43,35 +48,24 @@ def cargar_datos():
                        if isinstance(x, str) else x}
         )
         
-        cols_requeridas = {'Fecha', 'Mes', 'Year', 'Tipo', 'Monto'}
+        cols_requeridas = {'Fecha', 'Tipo', 'Monto'}
         if not cols_requeridas.issubset(df.columns):
             faltantes = cols_requeridas - set(df.columns)
             st.error(f"Columnas faltantes: {faltantes}")
-            return pd.DataFrame(), None
+            return pd.DataFrame()
         
-        # Año fiscal (para agrupamiento)
+        # Procesamiento de fechas y años
         df['Año_Fiscal'] = df['Fecha'].apply(lambda x: x.year + 1 if x.month >= 10 else x.year)
-        # Año real (para visualización)
         df['Año_Real'] = df['Fecha'].dt.year
         df['Mes_num'] = df['Fecha'].dt.month
         df['Mes_nombre'] = df['Fecha'].dt.strftime('%B')
         
-        # Calcular año fiscal (octubre a septiembre)
-        df['Año_Fiscal'] = df['Fecha'].apply(
-            lambda x: x.year + 1 if x.month >= 10 else x.year
-        )
-        
-        df['Año'] = df['Year']
-        df['Mes_num'] = df['Fecha'].dt.month
-        df['Mes_nombre'] = df['Mes']
-        df['Monto'] = pd.to_numeric(df['Monto'])
-        
+        # Intentar cargar la hoja de presupuesto
         try:
-            presupuesto = pd.read_excel(ruta, sheet_name="Presupuesto")
+            presupuesto = pd.read_excel(url, sheet_name="Presupuesto")
             presupuesto['Mes'] = pd.to_datetime(presupuesto['Mes'])
             presupuesto['Año'] = presupuesto['Mes'].dt.year
             presupuesto['Mes_num'] = presupuesto['Mes'].dt.month
-            # Año fiscal para presupuesto
             presupuesto['Año_Fiscal'] = presupuesto['Mes'].apply(
                 lambda x: x.year + 1 if x.month >= 10 else x.year
             )
@@ -97,9 +91,15 @@ def format_number(x, is_currency=True):
 @st.cache_data
 def cargar_datos():
     try:
-        ruta = Path(r"D:\Desktop2\TRABAJO BD\PROYECTOS_DB\ORLANDO\DASHBOARD\data2.xlsx")
+        # ID del archivo de Google Drive (extraído de la URL)
+        file_id = "1Rg8wMJPbQAo7g3Pp6_NyIbVsE27sYESB"
+        
+        # URL de exportación directa (formato Excel)
+        url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
+        
+        # Leer el archivo directamente
         df = pd.read_excel(
-            ruta,
+            url,
             sheet_name=0,
             parse_dates=['Fecha'],
             thousands=',',
